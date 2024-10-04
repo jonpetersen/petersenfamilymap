@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Petersen Family Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css"
+    />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+    <style>
+      #map {
+        height: 100%;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      .legend {
+        background: white;
+        padding: 10px;
+        border-radius: 5px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        position: absolute;
+        bottom: 30px;
+        left: 10px;
+        z-index: 1000;
+        font-family: "Helvetica Neue", sans-serif;
+      }
+      .legend h4 {
+        margin: 0 0 5px;
+      }
+      .legend div {
+        display: flex;
+        align-items: center;
+      }
+      .legend div span {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 5px;
+      }
+    </style>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div class="legend" id="legend">
+      <h4>Family Legend</h4>
+      <div><span style="background-color: blue"></span>Petersen/Muncaster</div>
+      <div><span style="background-color: green"></span>Pedersen</div>
+      <div><span style="background-color: red"></span>Ryder</div>
+      <div><span style="background-color: purple"></span>Little</div>
+      <div><span style="background-color: orange"></span>Pearce</div>
+      <div><span style="background-color: pink"></span>Muncaster</div>
+      <div><span style="background-color: yellow"></span>Cass</div>
+      <div><span style="background-color: cyan"></span>Hewison</div>
+      <div><span style="background-color: brown"></span>Robson</div>
+    </div>
+
+    <script>
+      let map;
+      let markerGroup; // To store all markers
+      const bounds = new L.LatLngBounds(); // To calculate bounds for all markers
+
+      // Initialize the Geoapify Map
+      function initMap() {
+        map = L.map("map").setView([55.0094, -1.4478], 2); // Center at North Shields, UK
+
+        // Add Geoapify tile layer
+        L.tileLayer(
+          `https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}.png?apiKey=fc3f77b5bc9b4c0c849d548c1afe2ca0`,
+          {
+            maxZoom: 20,
+            attribution: "© OpenStreetMap contributors © Geoapify",
+          }
+        ).addTo(map);
+
+        // Create a layer group for markers
+        markerGroup = L.layerGroup().addTo(map);
+
+        // Load marker data from Google Sheets
+        fetchMarkersFromGoogleSheet();
+
+        // Listen for zoom changes to switch between clustering and individual markers
+        map.on("zoomend", function () {
+          if (map.getZoom() >= 12) {
+            // Changed zoom level for clustering to 8
+            enableClustering();
+          } else {
+            disableClustering();
+          }
+        });
+      }
+
+      // Enable clustering
+      function enableClustering() {
+        const clusterGroup = L.markerClusterGroup({
+          iconCreateFunction: function (cluster) {
+            const markers = cluster.getAllChildMarkers();
+            const familyColors = {};
+
+            // Count the occurrences of each family color in the cluster
+            markers.forEach((marker) => {
+              const family = marker.options.family;
+              const color = getMarkerColor(family);
+              familyColors[color] = (familyColors[color] || 0) + 1;
+            });
+
+            // Use the first family color for the cluster marker
+            const mainColor = Object.keys(familyColors)[0] || "gray";
+
+            return L.divIcon({
+              html: `<div style="background-color: ${mainColor}; border-radius: 50%; width: 30px; height: 30px; display: flex; justify-content: center; align-items: center; color: white;">${cluster.getChildCount()}</div>`,
+              className: "marker-cluster",
+              iconSize: L.point(30, 30),
+            });
+          },
+        });
+
+        // Add all markers to the cluster group
+        markerGroup.eachLayer((marker) => {
+          clusterGroup.addLayer(marker);
+        });
+
+        // Remove markerGroup from the map and add the cluster group
+        map.removeLayer(markerGroup);
+        map.addLayer(clusterGroup);
+
+        markerGroup = clusterGroup; // Update the markerGroup reference
+      }
+
+      // Disable clustering
+      function disableClustering() {
+        const individualMarkers = L.layerGroup();
+
+        // Add all markers back to the individual marker group
+        markerGroup.eachLayer((marker) => {
+          individualMarkers.addLayer(marker);
+        });
+
+        // Remove the cluster group from the map and add the individual markers
+        map.removeLayer(markerGroup);
+        map.addLayer(individualMarkers);
+
+        markerGroup = individualMarkers; // Update the markerGroup reference
+      }
+
+      // Fetch data from Google Sheet
+      function fetchMarkersFromGoogleSheet() {
+        const sheetUrl =
+          "https://sheets.googleapis.com/v4/spreadsheets/1xfu30AHATT1I-WDp-NwkUFEYnSAi7H7qQIUnDiyI5I0/values/Sheet1?key=AIzaSyASsMIFFCJj91bljeE1B0WQo3dojvJBrXY";
+
+        $.getJSON(sheetUrl, function (data) {
+          const rows = data.values;
+
+          // Skip header row (assuming first row is headers)
+          for (let i = 1; i < rows.length; i++) {
+            const [name, dates, born, died, latitude, longitude, family] =
+              rows[i];
+
+            // Validate latitude and longitude (skip row if invalid)
+            if (isValidCoordinate(latitude) && isValidCoordinate(longitude)) {
+              // Add marker to map with colored icon based on family
+              addMarker({
+                name: name || "Unknown",
+                dates: dates || "Unknown",
+                born: born || "Unknown",
+                died: died || "Unknown",
+                lat: parseFloat(latitude),
+                lng: parseFloat(longitude),
+                family: family || "Unknown",
+              });
+            } else {
+              console.warn(
+                `Invalid coordinates at row ${
+                  i + 1
+                }: [${latitude}, ${longitude}]`
+              );
+            }
+          }
+
+          // After adding all markers, fit the map to show all of them
+          if (bounds.isValid()) {
+            map.fitBounds(bounds);
+          }
+        });
+      }
+
+      // Validate if latitude/longitude is a valid number
+      function isValidCoordinate(coord) {
+        const num = parseFloat(coord);
+        return !isNaN(num) && num >= -90 && num <= 90;
+      }
+
+      // Function to determine the marker color based on the family value
+      function getMarkerColor(family) {
+        switch (family) {
+          case "Petersen/Muncaster":
+            return "blue";
+          case "Pedersen":
+            return "green";
+          case "Ryder":
+            return "red";
+          case "Little":
+            return "purple";
+          case "Pearce":
+            return "orange";
+          case "Muncaster":
+            return "pink";
+          case "Cass":
+            return "yellow";
+          case "Hewison":
+            return "cyan";
+          case "Robson":
+            return "brown";
+          default:
+            return "gray"; // Default color for unknown family
+        }
+      }
+
+      // Add a marker on the map with different colors for different families
+      function addMarker(locationData) {
+        const markerColor = getMarkerColor(locationData.family);
+
+        // Create a circle marker with the specified color
+        const marker = L.circleMarker([locationData.lat, locationData.lng], {
+          radius: 8,
+          fillColor: markerColor,
+          color: markerColor,
+          weight: 1,
+          opacity: 1,
+          fillOpacity: 0.6,
+          family: locationData.family, // Store family for clustering
+        });
+
+        // Update bounds to include this marker
+        bounds.extend(marker.getLatLng());
+
+        // Create a popup for the marker
+        const popupContent = `
+				<strong>${locationData.name}</strong>
+				<p><strong>Dates:</strong> ${locationData.dates}</p>
+				<p><strong>Born:</strong> ${locationData.born}</p>
+				<p><strong>Died:</strong> ${locationData.died}</p>
+				<p><strong>Family:</strong> ${locationData.family}</p>
+			`;
+
+        marker.bindPopup(popupContent);
+
+        // Add marker to the marker group
+        markerGroup.addLayer(marker);
+      }
+
+      // Initialize the map when the page loads
+      window.onload = initMap;
+    </script>
+  </body>
+</html>
